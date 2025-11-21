@@ -46,6 +46,7 @@
 #include <aclnnop/aclnn_cos.h>
 #include <aclnnop/aclnn_log.h>
 #include <aclnnop/aclnn_sign.h>
+#include <aclnnop/aclnn_slice.h>
 #include "acl_tensor.h"
 #include "common.h"
 
