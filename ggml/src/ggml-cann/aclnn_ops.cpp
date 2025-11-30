@@ -2739,10 +2739,15 @@ void ggml_cann_conv_transpose_1d(ggml_backend_cann_context& ctx, ggml_tensor* ds
     aclTensor* acl_weight = ggml_cann_create_tensor(src0, src0->ne, src0->nb, 3, ACL_FORMAT_NCL);
     aclTensor* acl_dst = ggml_cann_create_tensor(dst, dst->ne, dst->nb, 3, ACL_FORMAT_NCL);
 
+    // get base information of input and kernel
     int64_t input_len = *(src1->ne);
     int64_t dst_len = *(dst->ne);
     int64_t kernel_size = *(src0->ne);
+
+    // set the max kernel size for each conv
     int64_t max_kernel_size = 255;
+
+    // compute the partition of kernel
     int64_t part_num = 1;
     part_num = (kernel_size + max_kernel_size - 1) / max_kernel_size;
 
@@ -2764,6 +2769,7 @@ void ggml_cann_conv_transpose_1d(ggml_backend_cann_context& ctx, ggml_tensor* ds
     auto weight_type = ggml_cann_type_mapping(src0->type);
     auto dst_type = ggml_cann_type_mapping(dst->type);
 
+    // slice the kernel to make each conv available
     int64_t slice_dim = -1;
     int64_t slice_start = 0;
     int64_t slice_end = max_kernel_size;
@@ -2776,12 +2782,14 @@ void ggml_cann_conv_transpose_1d(ggml_backend_cann_context& ctx, ggml_tensor* ds
     aclScalar* alpha = nullptr;
     float alphaValue = 1.0;
     alpha = aclCreateScalar(&alphaValue, aclDataType::ACL_FLOAT);
+
+    // set zero to destination
     GGML_CANN_CALL_ACLNN_OP(ctx, InplaceZero, acl_dst);
 
     for(int k = 0; k < part_num; k++){
 
+        // create part kernel tensor and slice from big kernel
         slice_start = max_kernel_size * k;
-
         if(k == part_num - 1){
             slice_end = kernel_size;
             interval = kernel_size - max_kernel_size * k;
@@ -2810,6 +2818,7 @@ void ggml_cann_conv_transpose_1d(ggml_backend_cann_context& ctx, ggml_tensor* ds
 
         GGML_CANN_CALL_ACLNN_OP(ctx, Slice, acl_weight, slice_dim, slice_start, slice_end, slice_step, part_kernel);
 
+        // create the part conv result tensor
         int64_t part_dst_ne[4];
         for(int i = 0; i < 4; i++){
             part_dst_ne[i] = *(dst->ne + i);
@@ -2827,12 +2836,13 @@ void ggml_cann_conv_transpose_1d(ggml_backend_cann_context& ctx, ggml_tensor* ds
 
         aclTensor* acl_part_dst = ggml_cann_create_tensor(part_dst_buf, dst_type, ggml_element_size(dst),
                                     part_dst_ne, part_dst_nb, 3, ACL_FORMAT_NCL);
-
         GGML_CANN_CALL_ACLNN_OP(ctx, InplaceZero, acl_part_dst);
 
+        // compute part conv transpose 1d
         GGML_CANN_CALL_ACLNN_OP(ctx, Convolution, acl_input, part_kernel, nullptr, stride,
         padding, dilation, transposed, padding, groups, acl_part_dst, cubeMathType);
 
+        // compute the position of part result in final result
         int64_t global_start = slice_start;
         int64_t global_end = std::min((input_len - 1) * strideVal[0] + slice_end, dst_len);
 
@@ -2866,11 +2876,12 @@ void ggml_cann_conv_transpose_1d(ggml_backend_cann_context& ctx, ggml_tensor* ds
 
         GGML_CANN_CALL_ACLNN_OP(ctx, InplaceZero, conv_result);
         GGML_CANN_CALL_ACLNN_OP(ctx, ConstantPadNd, acl_part_dst, padData, pad_value, conv_result);
-
         GGML_CANN_CALL_ACLNN_OP(ctx, InplaceAdd, acl_dst, conv_result, alpha);            
 
+        ggml_cann_release_resources(ctx, part_kernel, acl_part_dst, conv_result);
+
     }
-    ggml_cann_release_resources(ctx, acl_weight, acl_dst, stride, padding, dilation);
+    ggml_cann_release_resources(ctx, acl_weight, acl_dst, stride, padding, dilation, alpha);
 
 }
 
